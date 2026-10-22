@@ -1,10 +1,14 @@
-"""Plot net worth of families headed by a college graduate vs. families headed by
-someone with a high-school education or less, 1989-2025 (SCF, 2025 dollars).
+"""Plot mean net worth of families headed by a college graduate vs. families headed
+by someone with a high-school education or less, 1989-2025 (SCF, 2025 dollars).
+
+Black-and-white journal style: groups are told apart by line style and marker,
+and the numbered caption, notes and source sit below the panels.
 
 Reads data/net_worth_by_education.csv (run get_data.py first).
 Writes figures/net_worth_by_education.png
 """
 
+import textwrap
 from pathlib import Path
 
 import matplotlib.pyplot as plt
@@ -15,20 +19,69 @@ DATA = Path("data/net_worth_by_education.csv")
 OUT = Path("figures/net_worth_by_education.png")
 
 COLLEGE, HS = "Bachelor's degree or more", "High school or less"
-COLORS = {COLLEGE: "#2a78d6", HS: "#eb6834"}
-INK, INK_2, GRID, SURFACE = "#0b0b0b", "#52514e", "#e4e3df", "#fcfcfb"
+SERIES = {
+    COLLEGE: dict(linestyle="-", marker="o", markerfacecolor="black"),
+    HS: dict(linestyle="--", marker="s", markerfacecolor="white"),
+}
+RATIO = dict(linestyle="-", marker="^", markerfacecolor="black")
+
+CAPTION = [
+    ("Figure 1.",
+     "Mean net worth of U.S. families by education of the reference person, 1989–2025. "
+     "Panel (a) shows mean net worth for families whose reference person has a "
+     "bachelor's degree or more and for families whose reference person has a "
+     "high-school education or less. Panel (b) shows the ratio of the first group's "
+     "mean to the second's."),
+    ("Notes:",
+     "All families. The reference person is the single adult, the man in a mixed-sex "
+     "couple, or the older partner in a same-sex couple. \"High school or less\" combines "
+     "no high-school diploma and a diploma or GED; families with some college are "
+     "omitted. Dollar values are in 2025 dollars, adjusted by the Federal Reserve with "
+     "the CPI-U-RS. Estimates use survey weights and pool the five implicates."),
+    ("Source:",
+     "Board of Governors of the Federal Reserve System, Survey of Consumer Finances, "
+     "summary extract public data, 1989–2025."),
+]
+
+WIDTH_IN = 7.0          # full text width of a journal page
+PLOT_HEIGHT_IN = 2.9
+CAPTION_PT = 8.5
+WRAP_CHARS = 132        # characters per caption line at CAPTION_PT on WIDTH_IN
+
+plt.rcParams.update({
+    "font.family": "serif",
+    "font.serif": ["Times New Roman", "Times", "DejaVu Serif"],
+    "font.size": 9,
+    "axes.edgecolor": "black",
+    "axes.linewidth": 0.6,
+    "xtick.direction": "out",
+    "ytick.direction": "out",
+    "xtick.major.width": 0.6,
+    "ytick.major.width": 0.6,
+    "lines.color": "black",
+    "lines.linewidth": 1.0,
+    "lines.markersize": 4,
+    "lines.markeredgewidth": 0.8,
+})
 
 
-def style(ax):
-    ax.set_facecolor(SURFACE)
-    ax.grid(axis="y", color=GRID, linewidth=0.8)
-    ax.set_axisbelow(True)
-    for side in ["top", "right", "left"]:
+def style(ax, letter):
+    for side in ["top", "right"]:
         ax.spines[side].set_visible(False)
-    ax.spines["bottom"].set_color(INK_2)
-    ax.tick_params(colors=INK_2, length=0, labelsize=9)
     ax.set_xticks([1989, 1995, 2001, 2007, 2013, 2019, 2025])
-    ax.set_xlim(1987, 2031)
+    ax.set_xlim(1987, 2027)
+    ax.set_ylim(0, None)
+    ax.text(0.02, 0.98, f"({letter})", transform=ax.transAxes, va="top", fontsize=10)
+
+
+def caption_lines():
+    """Wrap each caption paragraph; return (lead-in or None, text) per line."""
+    lines = []
+    for lead, body in CAPTION:
+        wrapped = textwrap.wrap(f"{lead} {body}", WRAP_CHARS)
+        lines.append((lead, wrapped[0][len(lead):]))
+        lines += [(None, line) for line in wrapped[1:]]
+    return lines
 
 
 def main():
@@ -36,57 +89,46 @@ def main():
     df = df[df["group"].isin([COLLEGE, HS])]
     wide = df.pivot(index="year", columns="group")
 
-    fig, axes = plt.subplots(2, 2, figsize=(11, 7.5), sharex=True,
-                             gridspec_kw={"height_ratios": [3, 2]})
-    fig.patch.set_facecolor(SURFACE)
+    lines = caption_lines()
+    line_in = CAPTION_PT * 1.45 / 72
+    caption_in = len(lines) * line_in + 0.25
+    total_in = PLOT_HEIGHT_IN + caption_in
+    fig = plt.figure(figsize=(WIDTH_IN, total_in))
+    levels, ratio_ax = fig.subplots(1, 2, gridspec_kw=dict(
+        left=0.1, right=0.98, top=1 - 0.1 / total_in, bottom=(caption_in + 0.5) / total_in,
+        wspace=0.32))
 
-    for col, stat in enumerate(["median", "mean"]):
-        levels, ratio_ax = axes[0, col], axes[1, col]
-        values = wide[f"{stat}_net_worth"] / 1000
+    values = wide["mean_net_worth"] / 1000
+    for group in [COLLEGE, HS]:
+        levels.plot(values.index, values[group], color="black", label=group,
+                    **SERIES[group])
+    levels.yaxis.set_major_formatter(FuncFormatter(lambda v, _: f"{v:,.0f}"))
+    levels.set_ylabel("Mean net worth\n(thousands of 2025 dollars)")
+    levels.set_xlabel("Survey year")
+    style(levels, "a")
+    # The band between the two series is empty in every year.
+    levels.legend(loc="center", bbox_to_anchor=(0.55, 0.27), frameon=False,
+                  handlelength=3)
 
-        for group in [COLLEGE, HS]:
-            s = values[group]
-            levels.plot(s.index, s.values, color=COLORS[group], linewidth=2,
-                        marker="o", markersize=4)
-            label = "Bachelor's+" if group == COLLEGE else "HS or less"
-            levels.annotate(f"{label}\n${s.iloc[-1]:,.0f}k", (s.index[-1], s.iloc[-1]),
-                            xytext=(6, 0), textcoords="offset points",
-                            va="center", fontsize=9, color=INK)
-        levels.set_ylim(0, None)
-        levels.yaxis.set_major_formatter(FuncFormatter(lambda v, _: f"${v:,.0f}k"))
-        levels.set_title(f"{stat.capitalize()} net worth (thousands of 2025 $)",
-                         loc="left", fontsize=11, color=INK)
+    r = values[COLLEGE] / values[HS]
+    ratio_ax.plot(r.index, r.values, color="black", **RATIO)
+    ratio_ax.yaxis.set_major_formatter(FuncFormatter(lambda v, _: f"{v:.0f}"))
+    ratio_ax.set_ylabel("Ratio of means\n(bachelor's+ / HS or less)")
+    ratio_ax.set_xlabel("Survey year")
+    style(ratio_ax, "b")
+    ratio_ax.set_ylim(0, r.max() * 1.1)
 
-        r = values[COLLEGE] / values[HS]
-        ratio_ax.plot(r.index, r.values, color=INK_2, linewidth=2, marker="o", markersize=4)
-        for year in [r.index[0], r.index[-1]]:
-            ratio_ax.annotate(f"{r[year]:.1f}×", (year, r[year]), xytext=(0, 8),
-                              textcoords="offset points", ha="center",
-                              fontsize=9, color=INK)
-        ratio_ax.set_ylim(0, None)
-        ratio_ax.yaxis.set_major_formatter(FuncFormatter(lambda v, _: f"{v:.0f}×"))
-        ratio_ax.set_title(f"Ratio: {stat} of Bachelor's+ ÷ HS or less",
-                           loc="left", fontsize=11, color=INK)
+    renderer = fig.canvas.get_renderer()
+    for i, (lead, text) in enumerate(lines):
+        y = (caption_in - 0.1 - (i + 0.8) * line_in) / total_in
+        x = 0.02
+        if lead:
+            bold = fig.text(x, y, lead, fontsize=CAPTION_PT, fontweight="bold")
+            x += bold.get_window_extent(renderer).width / fig.bbox.width
+        fig.text(x, y, text, fontsize=CAPTION_PT)
 
-    for ax in axes.flat:
-        style(ax)
-    # Same scale on both ratio panels so median and mean gaps compare directly.
-    top = max(ax.get_ylim()[1] for ax in axes[1]) * 1.1
-    for ax in axes[1]:
-        ax.set_ylim(0, top)
-
-    fig.suptitle("Net worth gap by education of the family's reference person, 1989–2025",
-                 x=0.01, ha="left", fontsize=13, color=INK, fontweight="bold")
-    fig.text(0.01, 0.005,
-             "Source: Federal Reserve Survey of Consumer Finances, summary extract public data. "
-             "2025 dollars (CPI-U-RS). Five implicates pooled.\n"
-             "All families. Education is that of the reference person: the single adult, the man "
-             "in a mixed-sex couple, or the older partner in a same-sex couple.\n"
-             "HS or less = no high-school diploma + diploma/GED.",
-             fontsize=7.5, color=INK_2, va="bottom")
-    fig.tight_layout(rect=(0, 0.06, 1, 0.97))
     OUT.parent.mkdir(exist_ok=True)
-    fig.savefig(OUT, dpi=200, facecolor=SURFACE)
+    fig.savefig(OUT, dpi=300, facecolor="white")
     print(f"wrote {OUT}")
 
 
