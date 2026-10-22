@@ -95,15 +95,15 @@ def main():
     total_in = PLOT_HEIGHT_IN + caption_in
     fig = plt.figure(figsize=(WIDTH_IN, total_in))
     levels, ratio_ax = fig.subplots(1, 2, gridspec_kw=dict(
-        left=0.1, right=0.98, top=1 - 0.1 / total_in, bottom=(caption_in + 0.5) / total_in,
+        left=0.16, right=0.98, top=1 - 0.1 / total_in, bottom=(caption_in + 0.5) / total_in,
         wspace=0.32))
 
-    values = wide["mean_net_worth"] / 1000
+    values = wide["mean_net_worth"]
     for group in [COLLEGE, HS]:
         levels.plot(values.index, values[group], color="black", label=group,
                     **SERIES[group])
-    levels.yaxis.set_major_formatter(FuncFormatter(lambda v, _: f"{v:,.0f}"))
-    levels.set_ylabel("Mean net worth\n(thousands of 2025 dollars)")
+    levels.yaxis.set_major_formatter(FuncFormatter(lambda v, _: f"${v:,.0f}"))
+    levels.set_ylabel("Mean net worth\n(2025 dollars)")
     levels.set_xlabel("Survey year")
     style(levels, "a")
     # The band between the two series is empty in every year.
