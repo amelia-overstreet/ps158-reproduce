@@ -6,6 +6,12 @@ year. All years are published in 2025 dollars (CPI-U-RS, September of each
 survey year). Each family appears five times (multiple imputation); as in the
 Fed's own tables, statistics are computed on the five implicates pooled.
 
+Standard errors follow the Fed's MEANIT macro in the SCF codebook: sampling
+variance from the 999 bootstrap replicate weights (weight x multiplicity,
+first implicate only), plus imputation variance across the five implicates,
+combined as SE = sqrt((6/5) * imputation variance + sampling variance).
+The 95% margin of error is 1.96 x SE.
+
 Groups use EDCL, the education of the reference person (the single adult, the
 man in a mixed-sex couple, or the older partner in a same-sex couple):
     1 = no high-school diploma, 2 = high-school diploma or GED,
@@ -25,6 +31,9 @@ import requests
 
 YEARS = [1989, 1992, 1995, 1998, 2001, 2004, 2007, 2010, 2013, 2016, 2019, 2022, 2025]
 EXTRACT_URL = "https://www.federalreserve.gov/econres/files/scfp{year}excel.zip"
+# Replicate weights (Stata format). Files before 2001 use two-digit years.
+REPLICATE_URL = "https://www.federalreserve.gov/econres/files/scf{yr}rw1s.zip"
+N_REPLICATES = 999
 # The Fed's own published tables by education (2025 dollars), used as a check.
 FED_TABLES_URL = "https://www.federalreserve.gov/econres/scf/dataviz/download/zips/scf.zip"
 
@@ -85,21 +94,71 @@ def load_year(year: int) -> pd.DataFrame:
     if missing:
         raise ValueError(f"{year}: missing columns {missing}")
     df = read_csv_from_zip(path, usecols=[id_col, "WGT", "EDCL", "NETWORTH"])
-    if sorted((df[id_col] % 10).unique()) != [1, 2, 3, 4, 5]:
+    df = df.rename(columns={id_col: "id"})
+    df["implicate"] = df["id"] % 10
+    if sorted(df["implicate"].unique()) != [1, 2, 3, 4, 5]:
         raise ValueError(f"{year}: unexpected implicate ids")
     return df
 
 
-def summarize(year: int, df: pd.DataFrame) -> list[dict]:
+def load_replicates(year: int) -> pd.DataFrame:
+    """Replicate weights times multiplicities, indexed by first-implicate id.
+
+    A family not drawn in a replicate has missing values there; it gets 0.
+    """
+    yr = f"{year % 100:02d}" if year < 2001 else str(year)
+    path = download(REPLICATE_URL.format(yr=yr), RAW / f"scf{yr}rw1s.zip")
+    with zipfile.ZipFile(path) as zf:
+        names = [n for n in zf.namelist() if n.lower().endswith(".dta")]
+        if len(names) != 1:
+            raise ValueError(f"{path}: expected one .dta file, found {names}")
+        rw = pd.read_stata(io.BytesIO(zf.read(names[0])))
+    rw.columns = rw.columns.str.lower()
+    id_col = "y1" if "y1" in rw.columns else "x1"
+    k = range(1, N_REPLICATES + 1)
+    wt = rw[[f"wt1b{i}" for i in k]].fillna(0).clip(lower=0).to_numpy()
+    mm = rw[[f"mm{i}" for i in k]].fillna(0).clip(lower=0).to_numpy()
+    return pd.DataFrame(wt * mm, index=rw[id_col].astype(int))
+
+
+def standard_errors(sub: pd.DataFrame, reps: pd.DataFrame) -> dict:
+    """Standard errors of the median and mean of NETWORTH for one group."""
+    by_imp = list(sub.groupby("implicate"))
+    imp_median = [weighted_median(d["NETWORTH"].to_numpy(float), d["WGT"].to_numpy(float))
+                  for _, d in by_imp]
+    imp_mean = [np.average(d["NETWORTH"], weights=d["WGT"]) for _, d in by_imp]
+
+    first = sub[sub["implicate"] == 1]
+    w = reps.reindex(first["id"]).to_numpy()
+    if np.isnan(w).any():
+        raise ValueError("families missing from the replicate weight file")
+    x = first["NETWORTH"].to_numpy(float)
+    rep_mean = (w * x[:, None]).sum(axis=0) / w.sum(axis=0)
+    order = np.argsort(x)
+    cum = np.cumsum(w[order], axis=0)
+    rep_median = x[order][np.argmax(cum >= cum[-1] / 2, axis=0)]
+
+    def se(imp_values, rep_values):
+        return np.sqrt(6 / 5 * np.var(imp_values, ddof=1) + np.var(rep_values, ddof=1))
+
+    return {"median_se": se(imp_median, rep_median), "mean_se": se(imp_mean, rep_mean)}
+
+
+def summarize(year: int, df: pd.DataFrame, reps: pd.DataFrame) -> list[dict]:
     rows = []
     for group, codes in GROUPS.items():
         sub = df[df["EDCL"].isin(codes)]
         x, w = sub["NETWORTH"].to_numpy(float), sub["WGT"].to_numpy(float)
+        errors = standard_errors(sub, reps)
         rows.append({
             "year": year,
             "group": group,
             "median_net_worth": weighted_median(x, w),
+            "median_se": errors["median_se"],
+            "median_moe95": 1.96 * errors["median_se"],
             "mean_net_worth": np.average(x, weights=w),
+            "mean_se": errors["mean_se"],
+            "mean_moe95": 1.96 * errors["mean_se"],
             "share_of_families": w.sum() / df["WGT"].sum(),
             "n_families": len(sub) // 5,
         })
@@ -134,10 +193,11 @@ def main() -> None:
     RAW.mkdir(parents=True, exist_ok=True)
     rows = []
     for year in YEARS:
-        rows += summarize(year, load_year(year))
+        rows += summarize(year, load_year(year), load_replicates(year))
     result = pd.DataFrame(rows)
     check_against_fed(result)
-    result = result.round({"median_net_worth": 0, "mean_net_worth": 0, "share_of_families": 3})
+    dollars = [c for c in result.columns if c.startswith(("median", "mean"))]
+    result = result.round({**{c: 0 for c in dollars}, "share_of_families": 3})
     result.to_csv(OUT, index=False)
     print(f"wrote {OUT}")
 
