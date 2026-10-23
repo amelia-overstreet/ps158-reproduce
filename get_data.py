@@ -39,6 +39,7 @@ FED_TABLES_URL = "https://www.federalreserve.gov/econres/scf/dataviz/download/zi
 
 RAW = Path("data/raw")
 OUT = Path("data/net_worth_by_education.csv")
+RATIO_OUT = Path("data/net_worth_ratio.csv")
 
 GROUPS = {
     "Bachelor's degree or more": [4],
@@ -54,6 +55,8 @@ FED_LABELS = {
     "Some college": "Some college",
     "Bachelor's degree or more": "College degree",
 }
+# Numerator and denominator of the gap ratio.
+RATIO_GROUPS = ("Bachelor's degree or more", "High school or less")
 TOLERANCE = 0.01  # max relative gap from the Fed's published values
 
 
@@ -121,8 +124,11 @@ def load_replicates(year: int) -> pd.DataFrame:
     return pd.DataFrame(wt * mm, index=rw[id_col].astype(int))
 
 
-def standard_errors(sub: pd.DataFrame, reps: pd.DataFrame) -> dict:
-    """Standard errors of the median and mean of NETWORTH for one group."""
+def draws(sub: pd.DataFrame, reps: pd.DataFrame) -> dict:
+    """Median and mean of NETWORTH in each implicate and each replicate.
+
+    Returns {stat: (5 implicate values, 999 replicate values)}.
+    """
     by_imp = list(sub.groupby("implicate"))
     imp_median = [weighted_median(d["NETWORTH"].to_numpy(float), d["WGT"].to_numpy(float))
                   for _, d in by_imp]
@@ -138,31 +144,41 @@ def standard_errors(sub: pd.DataFrame, reps: pd.DataFrame) -> dict:
     cum = np.cumsum(w[order], axis=0)
     rep_median = x[order][np.argmax(cum >= cum[-1] / 2, axis=0)]
 
-    def se(imp_values, rep_values):
-        return np.sqrt(6 / 5 * np.var(imp_values, ddof=1) + np.var(rep_values, ddof=1))
-
-    return {"median_se": se(imp_median, rep_median), "mean_se": se(imp_mean, rep_mean)}
+    return {"median": (np.array(imp_median), rep_median),
+            "mean": (np.array(imp_mean), rep_mean)}
 
 
-def summarize(year: int, df: pd.DataFrame, reps: pd.DataFrame) -> list[dict]:
-    rows = []
+def standard_error(imp_values, rep_values) -> float:
+    return float(np.sqrt(6 / 5 * np.var(imp_values, ddof=1) + np.var(rep_values, ddof=1)))
+
+
+def summarize(year: int, df: pd.DataFrame, reps: pd.DataFrame) -> tuple[list, list]:
+    rows, group_draws = [], {}
     for group, codes in GROUPS.items():
         sub = df[df["EDCL"].isin(codes)]
         x, w = sub["NETWORTH"].to_numpy(float), sub["WGT"].to_numpy(float)
-        errors = standard_errors(sub, reps)
-        rows.append({
-            "year": year,
-            "group": group,
-            "median_net_worth": weighted_median(x, w),
-            "median_se": errors["median_se"],
-            "median_moe95": 1.96 * errors["median_se"],
-            "mean_net_worth": np.average(x, weights=w),
-            "mean_se": errors["mean_se"],
-            "mean_moe95": 1.96 * errors["mean_se"],
-            "share_of_families": w.sum() / df["WGT"].sum(),
-            "n_families": len(sub) // 5,
+        d = group_draws[group] = draws(sub, reps)
+        point = {"median": weighted_median(x, w), "mean": np.average(x, weights=w)}
+        row = {"year": year, "group": group}
+        for stat in ["median", "mean"]:
+            se = standard_error(*d[stat])
+            row |= {f"{stat}_net_worth": point[stat], f"{stat}_se": se,
+                    f"{stat}_moe95": 1.96 * se}
+        row |= {"share_of_families": w.sum() / df["WGT"].sum(), "n_families": len(sub) // 5}
+        rows.append(row)
+
+    by_group = {r["group"]: r for r in rows}
+    college, hs = by_group[RATIO_GROUPS[0]], by_group[RATIO_GROUPS[1]]
+    ratio_rows = []
+    for stat in ["median", "mean"]:
+        (ci, cr), (hi, hr) = (group_draws[g][stat] for g in RATIO_GROUPS)
+        se = standard_error(ci / hi, cr / hr)
+        ratio_rows.append({
+            "year": year, "stat": stat,
+            "ratio": college[f"{stat}_net_worth"] / hs[f"{stat}_net_worth"],
+            "ratio_se": se, "ratio_moe95": 1.96 * se,
         })
-    return rows
+    return rows, ratio_rows
 
 
 def check_against_fed(result: pd.DataFrame) -> None:
@@ -191,15 +207,19 @@ def check_against_fed(result: pd.DataFrame) -> None:
 
 def main() -> None:
     RAW.mkdir(parents=True, exist_ok=True)
-    rows = []
+    rows, ratio_rows = [], []
     for year in YEARS:
-        rows += summarize(year, load_year(year), load_replicates(year))
+        group_rows, year_ratios = summarize(year, load_year(year), load_replicates(year))
+        rows += group_rows
+        ratio_rows += year_ratios
     result = pd.DataFrame(rows)
     check_against_fed(result)
     dollars = [c for c in result.columns if c.startswith(("median", "mean"))]
     result = result.round({**{c: 0 for c in dollars}, "share_of_families": 3})
     result.to_csv(OUT, index=False)
     print(f"wrote {OUT}")
+    pd.DataFrame(ratio_rows).round(3).to_csv(RATIO_OUT, index=False)
+    print(f"wrote {RATIO_OUT}")
 
 
 if __name__ == "__main__":
