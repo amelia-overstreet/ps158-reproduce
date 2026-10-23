@@ -1,11 +1,13 @@
-"""Plot mean net worth of families headed by a college graduate vs. families headed
-by someone with a high-school education or less, 1989-2025 (SCF, 2025 dollars).
+"""Plot net worth of families headed by a college graduate vs. families headed by
+someone with a high-school education or less, 1989-2025 (SCF, 2025 dollars).
+One figure for means and one for medians, otherwise identical.
 
 Black-and-white journal style: groups are told apart by line style and marker,
 and the numbered caption, notes and source sit below the panels.
 
 Reads data/net_worth_by_education.csv (run get_data.py first).
-Writes figures/net_worth_by_education.png
+Writes figures/net_worth_by_education_median.png (medians, Figure 1) and
+figures/net_worth_by_education_mean.png (means, Figure 2).
 """
 
 import textwrap
@@ -16,7 +18,11 @@ import pandas as pd
 from matplotlib.ticker import FuncFormatter
 
 DATA = Path("data/net_worth_by_education.csv")
-OUT = Path("figures/net_worth_by_education.png")
+# (statistic, figure number, output file)
+FIGURES = [
+    ("median", 1, Path("figures/net_worth_by_education_median.png")),
+    ("mean", 2, Path("figures/net_worth_by_education_mean.png")),
+]
 
 COLLEGE, HS = "Bachelor's degree or more", "High school or less"
 SERIES = {
@@ -25,23 +31,31 @@ SERIES = {
 }
 RATIO = dict(linestyle="-", marker="^", markerfacecolor="black")
 
-CAPTION = [
-    ("Figure 1.",
-     "Mean net worth of U.S. families by education of the reference person, 1989–2025. "
-     "Panel (a) shows mean net worth for families whose reference person has a "
-     "bachelor's degree or more and for families whose reference person has a "
-     "high-school education or less. Panel (b) shows the ratio of the first group's "
-     "mean to the second's."),
-    ("Notes:",
-     "All families. The reference person is the single adult, the man in a mixed-sex "
-     "couple, or the older partner in a same-sex couple. \"High school or less\" combines "
-     "no high-school diploma and a diploma or GED; families with some college are "
-     "omitted. Dollar values are in 2025 dollars, adjusted by the Federal Reserve with "
-     "the CPI-U-RS. Estimates use survey weights and pool the five implicates."),
-    ("Source:",
-     "Board of Governors of the Federal Reserve System, Survey of Consumer Finances, "
-     "summary extract public data, 1989–2025."),
-]
+NOTES = (
+    "All families. The reference person is the single adult, the man in a mixed-sex "
+    "couple, or the older partner in a same-sex couple. \"High school or less\" combines "
+    "no high-school diploma and a diploma or GED; families with some college are "
+    "omitted. Dollar values are in 2025 dollars, adjusted by the Federal Reserve with "
+    "the CPI-U-RS. Estimates use survey weights and pool the five implicates."
+)
+SOURCE = (
+    "Board of Governors of the Federal Reserve System, Survey of Consumer Finances, "
+    "summary extract public data, 1989–2025."
+)
+
+
+def caption(stat, number):
+    return [
+        (f"Figure {number}.",
+         f"{stat.capitalize()} net worth of U.S. families by education of the reference "
+         f"person, 1989–2025. Panel (a) shows {stat} net worth for families whose reference "
+         "person has a bachelor's degree or more and for families whose reference person "
+         "has a high-school education or less. Panel (b) shows the ratio of the first "
+         f"group's {stat} to the second's."),
+        ("Notes:", NOTES),
+        ("Source:", SOURCE),
+    ]
+
 
 WIDTH_IN = 7.0          # full text width of a journal page
 PLOT_HEIGHT_IN = 2.9
@@ -74,22 +88,18 @@ def style(ax, letter):
     ax.text(0.02, 0.98, f"({letter})", transform=ax.transAxes, va="top", fontsize=10)
 
 
-def caption_lines():
+def caption_lines(paragraphs):
     """Wrap each caption paragraph; return (lead-in or None, text) per line."""
     lines = []
-    for lead, body in CAPTION:
+    for lead, body in paragraphs:
         wrapped = textwrap.wrap(f"{lead} {body}", WRAP_CHARS)
         lines.append((lead, wrapped[0][len(lead):]))
         lines += [(None, line) for line in wrapped[1:]]
     return lines
 
 
-def main():
-    df = pd.read_csv(DATA)
-    df = df[df["group"].isin([COLLEGE, HS])]
-    wide = df.pivot(index="year", columns="group")
-
-    lines = caption_lines()
+def draw(wide, stat, number, out):
+    lines = caption_lines(caption(stat, number))
     line_in = CAPTION_PT * 1.45 / 72
     caption_in = len(lines) * line_in + 0.25
     total_in = PLOT_HEIGHT_IN + caption_in
@@ -98,12 +108,12 @@ def main():
         left=0.16, right=0.98, top=1 - 0.1 / total_in, bottom=(caption_in + 0.5) / total_in,
         wspace=0.32))
 
-    values = wide["mean_net_worth"]
+    values = wide[f"{stat}_net_worth"]
     for group in [COLLEGE, HS]:
         levels.plot(values.index, values[group], color="black", label=group,
                     **SERIES[group])
     levels.yaxis.set_major_formatter(FuncFormatter(lambda v, _: f"${v:,.0f}"))
-    levels.set_ylabel("Mean net worth\n(2025 dollars)")
+    levels.set_ylabel(f"{stat.capitalize()} net worth\n(2025 dollars)")
     levels.set_xlabel("Survey year")
     style(levels, "a")
     # The band between the two series is empty in every year.
@@ -113,7 +123,7 @@ def main():
     r = values[COLLEGE] / values[HS]
     ratio_ax.plot(r.index, r.values, color="black", **RATIO)
     ratio_ax.yaxis.set_major_formatter(FuncFormatter(lambda v, _: f"{v:.0f}"))
-    ratio_ax.set_ylabel("Ratio of means\n(bachelor's+ / HS or less)")
+    ratio_ax.set_ylabel(f"Ratio of {stat}s\n(bachelor's+ / HS or less)")
     ratio_ax.set_xlabel("Survey year")
     style(ratio_ax, "b")
     ratio_ax.set_ylim(0, r.max() * 1.1)
@@ -127,9 +137,18 @@ def main():
             x += bold.get_window_extent(renderer).width / fig.bbox.width
         fig.text(x, y, text, fontsize=CAPTION_PT)
 
-    OUT.parent.mkdir(exist_ok=True)
-    fig.savefig(OUT, dpi=300, facecolor="white")
-    print(f"wrote {OUT}")
+    out.parent.mkdir(exist_ok=True)
+    fig.savefig(out, dpi=300, facecolor="white")
+    plt.close(fig)
+    print(f"wrote {out}")
+
+
+def main():
+    df = pd.read_csv(DATA)
+    df = df[df["group"].isin([COLLEGE, HS])]
+    wide = df.pivot(index="year", columns="group")
+    for stat, number, out in FIGURES:
+        draw(wide, stat, number, out)
 
 
 if __name__ == "__main__":
